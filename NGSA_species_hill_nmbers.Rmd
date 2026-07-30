@@ -1,0 +1,287 @@
+---
+title: "NGSA_species_hill_nmbers"
+author: Edward WH Turner 
+output: html_document
+---
+
+# Introduction
+Goals:
+
+* Calculate Hill numbers qD for q=0 and q=1
+* Create diversity curves for qD for q=0 and q=1
+* Extract csvs for diversity curve data, not including extrapolated data
+
+```{r Packages}
+#installing packages 
+library(tidyverse)
+library(iNEXT)
+library(dplyr)
+library(ggplot2)
+library(vegan)
+
+
+```
+#Importing data, ensure to do this in a csv file otherwise R won't like it. 
+
+#make sure to seperate into different members so it is easier to code/read.Feel free to put them in order but I like to put them in strat order 
+
+#if you don't have them already go to the google drive and download the raw data papes into csv files, we have to do some fun coding to get them do what we want for R. We are basically gonna code our pesky pivot tables so no headaches can be generated from excel :) 
+
+```{r}
+#JC (James City Formation)
+genRAW_86<- read.csv("60986.csv", header = TRUE)
+genRAW_87<- read.csv("60987.csv", header = TRUE)
+genRAW_88<- read.csv("60988.csv", header = TRUE)
+genRAW_89<- read.csv("60989.csv", header = TRUE)
+
+#combine all the JC into one package 
+
+ spRAW_jc <-rbind(genRAW_86, genRAW_87, genRAW_88, genRAW_89) 
+
+
+#Complete abundance spreadsheet with all formations except JC, import the entire csv 
+
+
+abun072726<- read.csv("CR_species_abundance_072726.csv" , header = TRUE )
+
+```
+
+#Setting collumsn and rows
+
+```{r}
+#time to organise everything into what we need/want, lets start with JC
+
+#turn the combined JC into a genus matrix for JC
+JCspecies_matrix <-genRAW_jc%>%
+
+  #remove all rows where "species_name" is blank or N/a
+filter(species_name !=""& !is.na("species_name"))%>%
+  
+#group and summarise species names 
+group_by(collection_no, species_name)%>%
+summarise(total_abund = sum (abund_value, na.rm = TRUE), .groups= 'drop') %>%
+  
+#pivot to a wide format 
+
+pivot_wider(names_from = species_name, 
+            values_from = total_abund,
+            values_fill = 0)%>%
+  
+#set the row names 
+column_to_rownames(var = "collection_no")
+
+#view final matrix 
+head(JCspecies_matrix)
+
+```
+```{r}
+# ------------------------------------------------------------------------------
+# 1. Convert the Large Sheet (abun072726) to Long Format
+# ------------------------------------------------------------------------------
+# We keep the species column and pivot all sample columns into a single column.
+
+large_sheet_long <- abun072726 %>%
+  # Select species name and all sample columns (excluding non-abundance metadata columns)
+  # Adjust column names in 'select' if your column names differ slightly
+  filter(!is.na(`Accepted.Species`) & `Accepted.Species` != "") %>%
+  pivot_longer(
+    cols = -c(1:4), # Ignores the first 4 metadata columns (Genus, Species, Member, etc.)
+    names_to = "collection_no",
+    values_to = "abund_value"
+  ) %>%
+  rename(species_name = `Accepted.Species`) %>%
+  mutate(
+    collection_no = as.character(collection_no),
+    abund_value = as.numeric(abund_value)
+  ) %>%
+  filter(!is.na(abund_value), abund_value > 0)
+
+
+# ------------------------------------------------------------------------------
+# 2. Clean and Align the JC Dataset (genRAW_jc)
+# ------------------------------------------------------------------------------
+jc_long <- genRAW_jc %>%
+  filter(!is.na(species_name) & species_name != "") %>%
+  select(species_name, collection_no, abund_value) %>%
+  mutate(
+    collection_no = as.character(collection_no),
+    abund_value = as.numeric(abund_value)
+  )
+
+
+# ------------------------------------------------------------------------------
+# 3. Stack Both Datasets Together
+# ------------------------------------------------------------------------------
+master_long <- bind_rows(large_sheet_long, jc_long)
+
+
+# ------------------------------------------------------------------------------
+# 4. Create the Unified Pivot Table (Species = Rows, Samples = Columns)
+# ------------------------------------------------------------------------------
+# -------------------------------------------------------------------------
+# Create the Unified Pivot Table (Species = Rows, Samples = Columns)
+# -------------------------------------------------------------------------
+master_species_matrix <- master_long %>%
+  
+  # 1. Create our column headers. Tag "JC" for specific samples, leave the rest alone.
+  mutate(header_name = case_when(
+    collection_no %in% c("60986", "60987", "60988", "60989") ~ paste("JC", collection_no, sep = "_"),
+    
+    # If your master_long DOES have a column with member names for the others, 
+    # replace 'as.character(collection_no)' below with: paste(member_column_name, collection_no, sep = "_")
+    TRUE ~ as.character(collection_no) 
+  )) %>%
+  
+  # 2. Group by our new custom header instead of collection_no
+  group_by(species_name, header_name) %>%
+  summarise(total_abund = sum(abund_value, na.rm = TRUE), .groups = "drop") %>%
+  
+  # 3. Pivot wider using the custom headers
+  pivot_wider(
+    names_from = header_name,
+    values_from = total_abund,
+    values_fill = 0
+  ) %>%
+  
+  # 4. Order the rows (species) and columns (alphabetically, grouping JC together)
+  arrange(species_name) %>%
+  select(species_name, sort(names(.)[names(.) != "species_name"]))
+
+# View the final combined matrix
+View(master_species_matrix)
+```
+
+#Prep and run iNext 
+```{r}
+# 1. Prepare the matrix for iNEXT
+# Move the text column 'species_name' into the row names so the matrix is  now 100% numeric
+species_matrix_inext <- master_species_matrix %>%
+  column_to_rownames(var = "species_name")
+
+# 2. Set rarefaction intervals for iNEXT
+rare_intervals <- seq(from = 1, to = 3000, by = 10)
+
+
+# 2. Set rarefaction intervals for iNEXT
+rare_intervals <- seq(from = 1, to = 3000, by = 10)
+
+# --- INSERT NEW FIX CODE HERE ---
+# Force all decimal values in the matrix to be whole integer counts
+species_matrix_inext <- round(species_matrix_inext)
+
+# Calculate the new column totals
+col_totals <- colSums(species_matrix_inext)
+
+# Identify any samples that sum to exactly 571 or 503 (the known bugged sizes)
+bugged_samples <- names(col_totals[col_totals %in% c(571, 503)])
+
+# Loop through any problem samples and add 1 to their highest count to bypass the bug
+if(length(bugged_samples) > 0) {
+  for(sample in bugged_samples) {
+    max_row_index <- which.max(species_matrix_inext[, sample])
+    species_matrix_inext[max_row_index, sample] <- species_matrix_inext[max_row_index, sample] + 1
+  }
+}
+# 3. Run iNEXT! RUN!
+# q = 0 (species richness), q = 1 (shannon diversity), q = 2 (simpson diversity)
+# time for iNext to ballout
+
+inext_out_species <- iNEXT(species_matrix_inext,
+                           q = c(0, 1, 2),
+                           datatype = "abundance",
+                           size = rare_intervals,
+                           endpoint = NULL,
+                           knots = NULL,
+                           se = TRUE,
+                           conf = 0.95,
+                           nboot = 1000)
+
+#4. Order up... Lets have a wee lookie 
+
+View(inext_out_species$AsyEst)
+```
+#convert to csv to add to google drive 
+```{r}
+write.csv(inext_out_species$AsyEst, "hill_numbers_species_280726.csv", row.names = FALSE)
+```
+
+#rarefaction for species 
+
+```{r}
+
+# Extract species rarefaction data for all sites, excluding extrapolation
+all_sp_rare_data <- inext_out_species$iNextEst$size_base[inext_out_species$iNextEst$size_base$Method != "Extrapolation", ]
+write_csv(all_sp_rare_data, "all_sp_rare.csv")
+head(all_sp_rare_data)
+```
+
+#time to graph rarefaction (found it easier to do it here given the size of everything we are workign with)
+
+```{r Rarefaction Plot Custom Colors}
+library(tidyverse)
+
+# 1. Read in species rarefaction data
+all_sp_rare <- read_csv("all_sp_rare.csv")
+
+# 2. Filter for Species Richness (Order.q = 0)
+rare_richness <- all_sp_rare %>%
+  filter(Order.q == 0)
+
+# 3. Define custom color palette for each assemblage
+assemblage_colors <- c(
+  # James City Formation
+  "JC_60986"           = "#E7B800",
+  "JC_60987"           = "#E7B800",
+  "JC_60988"           = "#E7B800",
+  "JC_60989"           = "#E7B800",
+  
+  # Chowan River Formation 
+  "X95LW"              = "#2E8B57",
+  "X82LW110"           = "#2E8B57",
+  "X76LW73"            = "#2E8B57",
+  
+  # Sunken Meadow Member (Yorktown Formation)
+  "X230723XBCG"        = "#8E44AD",
+  "AP.SM.07CWEB1"      = "#8E44AD",
+  "AP.SM.07MPYB3"      = "#8E44AD",
+  "HB.SM.CG.1.3"       = "#8E44AD",
+  "HB.SM.CG.3.1"       = "#8E44AD",
+  
+  # Bear Bluff Formation
+  "X92LW58"            = "#E67E22",
+  
+  # Rushmere Member (Yorktown Formation)
+  "PBDB.RM"            = "#E74C3C",
+  "ET.RM"              = "#E74C3C",
+  "NS.CG1.RM"          = "#E74C3C",
+  "NSFW.01RM220620"    = "#E74C3C",
+  "X71LW75"            = "#E74C3C",
+  
+  # Moorehouse Member (Yorktown Formation)
+  "X70LW1..Rice.s.Pit." = "#3498DB",
+  "ET.MH"              = "#3498DB",
+  "RCMB091723"         = "#3498DB",
+  "HGMH3.1.MH."        = "#3498DB",
+  "HGMH3.2"            = "#3498DB"
+)
+
+# 4. Generate the plot
+ggplot(rare_richness, aes(x = m, y = qD, group = Assemblage, color = Assemblage, fill = Assemblage)) +
+  # Continuous 95% Confidence Interval error bands
+  geom_ribbon(aes(ymin = qD.LCL, ymax = qD.UCL), alpha = 0.15, color = NA) +
+  # Rarefaction curves
+  geom_line(linewidth = 0.9) +
+  # Apply custom colors
+  scale_color_manual(values = assemblage_colors) +
+  scale_fill_manual(values = assemblage_colors) +
+  theme_minimal() +
+  labs(
+    title = "Species Rarefaction Curves by Geologic Member Group",
+    x = "Number of Individuals / Samples (m)",
+    y = "Species Richness (qD)"
+  ) +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    legend.position = "right"
+  )
+```
