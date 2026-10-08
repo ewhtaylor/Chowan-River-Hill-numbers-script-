@@ -1,0 +1,144 @@
+---
+title: "Hill numbers 25ET02"
+author: "Edward WH Taylor"
+date: "2026-09-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+---
+title: "Hill Nmbers (genera)- James city formation"
+author: "Edward WH Turner" 
+output: html_document
+---
+
+
+# Introduction
+Goals:
+
+* Calculate Hill numbers qD for q=0 and q=1
+* Create diversity curves for qD for q=0 and q=1
+* Extract csvs for diversity curve data, not including extrapolated data
+
+```{r}
+install.packages("vegan") 
+install.packages("tidyverse") 
+install.packages("iNEXT") 
+install.packages("dplyr") 
+install.packages("ggplot2") 
+```
+
+
+```{r Packages}
+
+
+#installing packages 
+library(tidyverse)
+library(iNEXT)
+library(dplyr)
+library(ggplot2)
+library(vegan)
+
+
+```
+#Importing data, ensure to do this in a csv file otherwise R won't like it. 
+
+  
+
+
+
+```{r}
+genRAW_ET02<- read.csv("CR_SYNOM_NGSA", header = TRUE)
+
+
+```
+### combining all genraws into one package 
+```{r}
+genRAW_jc <-rbind(genRAW_86, genRAW_87, genRAW_88, genRAW_89)
+```
+###view combined data 
+```{r}
+head(genRAW_jc)
+```
+
+### Setting Rows and Columns
+
+
+```{r}
+#turn the combined genraws into a genus matrix
+genus_matrix <-genRAW_jc%>%
+
+  #remove all rows where "genus" is blank or N/a
+filter(genus !=""& !is.na(genus))%>%
+  
+#group and summrise genera
+group_by(collection_no, genus)%>%
+summarise(total_abund = sum (abund_value, na.rm = TRUE), .groups= 'drop')%>%
+  
+#pivot to a wide format 
+
+pivot_wider(names_from = genus, 
+            values_from = total_abund,
+            values_fill = 0)%>%
+  
+#set the row names 
+column_to_rownames(var = "collection_no")
+
+#view final matrix 
+head(genus_matrix)
+```
+### Transpoe the matrix 
+```{r}
+#Transpose the matrix so Genera are rows and sites are columns 
+genus_matrix_inext <- t(genus_matrix)
+
+#iNEXT requires abundance data to be in integers for this to work
+#we apply a ceiling to this (the whole matrix in one go)
+genus_matrix_inext<- ceiling (genus_matrix_inext) 
+```
+
+### Run iNEXT! RUN! 
+
+```{r}
+#set rarefaction intervals
+rare_intervals <- seq(from = 1, to = 3000, by = 10)
+
+#time to put iNEXT to work on the entire matrix! 
+# q = 0 (species/ genus richness), q= 1 (shannon diversity), q= 2 (simpson diversity )
+#time for iNext to ballout 
+
+inext_out <- iNEXT(genus_matrix_inext, 
+q = c (0,1,2),
+datatype = "abundance",
+size = rare_intervals, 
+endpoint= NULL,
+knots = NULL,
+se = TRUE, 
+conf = 0.95,
+nboot = 1000)
+```
+
+
